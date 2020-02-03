@@ -36,13 +36,6 @@ func numError(b []byte, c byte) error {
 	return &numErr{"number \""+string(b)+"\" has invalid char: \""+string(c)+"\""}
 }
 
-// https://play.golang.org/p/8uFiY5qdp0u
-// https://golang.org/pkg/strconv/#ParseFloat
-// strconv.ParseFloat returns the nearest floating-point number rounded using IEEE754 unbiased rounding.
-// http://www.leapsecond.com/tools/fast_atof.c
-// http://beedub.com/Sprite093/src/lib/c/stdlib/atof.c
-// https://randomascii.wordpress.com/2012/02/25/comparing-floating-point-numbers-2012-edition/
-
 // Atof returns float64 value of ASCII/UTF-8 coded decimal number in 'f' format |+/-|yy.xx .
 // All non printable characters <= space (' ' = 32 dec) are left and right trimmed off.
 // This includes "normal white space": space, LF, CR, tab (' ', '\n', '\r', '\t'). 
