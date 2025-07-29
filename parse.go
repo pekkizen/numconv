@@ -1,40 +1,37 @@
 package numconv
 
-import "strconv"
+import (
+	"strconv"
+)
 
 const (
 	dot                 = '.'
 	asciiWhitespaceOnly = false
-	maxNumberLen        = 16 // 15 digits + dot or 16 digits
-	// asciiZero           = int64('0')
+	iEEE754             = false // IEEE754 (strconv) compatible float64 parsing
+	xsdDecimals         = false // only xsd:decimal format parsing
+	// https://www.datypic.com/sc/xsd/t-xsd_decimal.html
 )
 
-var f64pow10 = [...]float64{
-	1, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10,
-	1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
-}
-var u64pow10 = [...]uint64{
-	1, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10,
-	1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
+var fpow10 = []float64{
+	1, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+	1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21,
 }
 
-type err struct {
-	s string
+var fdivpow10 = []float64{
+	1, 1.0 / 1e1, 1.0 / 1e2, 1.0 / 1e3, 1.0 / 1e4, 1.0 / 1e5, 1.0 / 1e6,
+	1.0 / 1e7, 1.0 / 1e8, 1.0 / 1e9, 1.0 / 1e10, 1.0 / 1e11, 1.0 / 1e12,
+	1.0 / 1e13, 1.0 / 1e14, 1.0 / 1e15, 1.0 / 1e16, 1.0 / 1e17, 1.0 / 1e18,
+	1.0 / 1e19, 1.0 / 1e20,
 }
 
-func (e *err) Error() string {
-	return "numconv.Atof: " + e.s
-}
+type err struct{ s string }
+
+func (e *err) Error() string { return "numconv.Atof: " + e.s }
 
 //go:noinline
 func syntaxErr(b []byte) error {
-	return &err{"parsing " + "\"" + string(b) + "\": " + "invalid syntax"}
+	return &err{"parsing " + "\"" + string(b) + "\"" + ": " + "invalid syntax"}
 }
-
-//go:noinline
-// func syntaxEmptyNumber(b []byte) error {
-// 	return &err{"parsing " + "\"" + string(b) + "\": " + "the number is empty"}
-// }
 
 // Trim returns a subslice of b with all leading and trailing whitespace removed.
 // All characters <= Ascii space (' ' = 32 dec) are left and right trimmed off.
@@ -57,28 +54,6 @@ func isWhitespace(c byte) bool {
 	return c <= ' '
 }
 
-// TrimSpace returns a subslice of b with all leading and trailing whitespace removed.
-// Adapted from bytes.TrimSpace. Trim above is faster.
-func TrimSpace(b []byte) []byte {
-	if len(b) == 0 {
-		return b
-	}
-	l := 0
-	for l = range b {
-		if !isWhitespace(b[l]) {
-			break
-		}
-	}
-	b = b[l:]
-	r := len(b) - 1
-	for ; r >= 0; r-- {
-		if !isWhitespace(b[r]) {
-			break
-		}
-	}
-	return b[:r+1]
-}
-
 func TrimTrailingZeros(b []byte) []byte {
 	for len(b) > 1 && b[len(b)-1] == '0' && b[len(b)-2] != dot {
 		b = b[:len(b)-1]
@@ -88,19 +63,10 @@ func TrimTrailingZeros(b []byte) []byte {
 
 //go:noinline
 func parseFloat(b []byte) (float64, error) {
-	return strconv.ParseFloat(string(b), 64)
-}
-
-//go:noinline
-func parseDigit(c byte) (float64, error) {
-	if '0' <= c && c <= '9' {
-		return float64(int64(c & 15)), nil
+	if xsdDecimals {
+		return 0, syntaxErr(b)
 	}
-	return 0, syntaxErr([]byte{c})
-}
-
-func isDigitOrDot(c byte) bool {
-	return ('0' <= c && c <= '9') || c == dot
+	return strconv.ParseFloat(string(b), 64)
 }
 
 /*
@@ -120,17 +86,25 @@ func Atof(b []byte) (float64, error) {
 	if len(b) == 0 {
 		return 0, syntaxErr(b)
 	}
-	if len(b) == 1 {
-		return parseDigit(b[0])
-	}
+	sign := 1.0
 	d := b
-	if b[0] == '-' || b[0] == '+' {
+	switch b[0] {
+	case '-':
+		sign = -1.0
+		fallthrough
+	case '+':
 		b = b[1:]
 	}
-	if len(b) > maxNumberLen {
+	if len(b) == 0 {
+		return 0, syntaxErr(b)
+	}
+	if iEEE754 && len(b) > 16 {
 		return parseFloat(d)
 	}
-	exp10 := 0
+	if !iEEE754 && len(b) > 19 {
+		return parseFloat(d)
+	}
+	fraclen := 0
 	u := uint64(0)
 
 	for i, c := range b {
@@ -138,70 +112,61 @@ func Atof(b []byte) (float64, error) {
 		case '0' <= c && c <= '9':
 			u = u*10 + uint64(c&15)
 
-		case c == dot && exp10 == 0 && len(b) > 1:
-			exp10 = len(b) - (i + 1)
+		case c == dot && fraclen == 0 && len(b) > 1:
+			fraclen = len(b) - i - 1
 
 		default:
 			return parseFloat(d)
 		}
 	}
-	f := float64(int64(u)) / f64pow10[exp10]
-	if d[0] == '-' {
-		f = -f
+	if iEEE754 {
+		return sign * float64(u) / fpow10[fraclen], nil
 	}
-	return f, nil
+	return sign * float64(u) * fdivpow10[fraclen], nil
 }
 
-/*
-AtofFloat can parse up to 15 digits decimals and 16 digits decimals integers (IEEE754) correctly.
-AtofFloat uses simple algorithm with only floating point arithmetic. Amount of parsed digits is
-limited to 308 but accuracy is still limited to the first 16-18 digits.
-Atof is ~1.4 x faster than AtofFloat.
-*/
-func AtofFloat(b []byte) (float64, error) {
+func Atof2(b []byte) (float64, error) {
 	if len(b) == 0 {
 		return 0, syntaxErr(b)
 	}
 	d := b
-	neg := b[0] == '-'
-	if len(b) > 1 && (neg || b[0] == '+') && isDigitOrDot(b[1]) {
-		b = b[1:] // trim sign
-	}
-	// for len(b) > 2 && b[0] == '0' { //trim left zeros??
-	// 	b = b[1:]
-	// }
-	var (
-		hasdot = false
-		// trunc   = false
-		f       float64
-		pow     = float64(1.0)
-		powfrac = float64(1.0)
-	)
-	// if len(b) > 309 {
-	// 	b = b[:309] //1e308 < maxFloat64 < 2e308
-	// 	trunc = true
-	// }
-	for i := len(b) - 1; i >= 0; i-- {
-		c := b[i]
+	if b[0] == '-' || b[0] == '+' {
+		b = b[1:]
 
+	}
+	if len(b) == 0 {
+		return 0, syntaxErr(b)
+	}
+	if iEEE754 && len(b) > 16 {
+		return parseFloat(d)
+	}
+	if !iEEE754 && len(b) > 19 {
+		return parseFloat(d)
+	}
+	fraclen := 0
+	u := uint64(0)
+
+	for i, c := range b {
 		switch {
 		case '0' <= c && c <= '9':
-			f += pow * float64(c-'0')
-			pow *= 10
+			u = u*10 + uint64(c&15)
 
-		case c == dot && !hasdot && len(b) > 1:
-			powfrac = pow
-			hasdot = true
+		case c == dot && fraclen == 0 && len(b) > 1:
+			fraclen = len(b) - i - 1
 
 		default:
 			return parseFloat(d)
 		}
 	}
-	// if trunc && !hasdot {
-	// 	f *= 10 // f -> +Inf
-	// }
-	if neg {
-		f = -f
+	var f float64
+	if iEEE754 {
+		f = float64(u) / fpow10[fraclen]
 	}
-	return f / powfrac, nil
+	if iEEE754 {
+		f = float64(u) * fdivpow10[fraclen]
+	}
+	if d[0] == '-' {
+		return -f, nil
+	}
+	return f, nil
 }
